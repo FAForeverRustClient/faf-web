@@ -20,6 +20,7 @@ const { spawn } = require('child_process');
 const { resolve } = require('./lib/upstreams');
 const { createCache, proxyGet, UPSTREAM_HEADERS } = require('./lib/proxy');
 const { resolveFile } = require('./lib/static');
+const { createWatcher, redactUrl } = require('./lib/watcher');
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -255,6 +256,155 @@ async function testServer() {
   }
 }
 
+
+/* ------------------------------------------------------------- auto-update */
+
+const VERIFY_FILES = ['server.js', 'lib/proxy.js', 'lib/static.js', 'lib/upstreams.js',
+  'lib/watcher.js', 'public/app.js', 'webtest.js'];
+
+/**
+ * Stub git/node. On `git clone` it really creates the files verify() looks for,
+ * so the existsSync loop and the control flow are exercised for real; only the
+ * network and the child processes are faked.
+ */
+function makeExec(opts) {
+  const calls = [];
+  return {
+    calls,
+    exec: async (cmd, args) => {
+      calls.push(cmd + ' ' + args.join(' '));
+      const joined = args.join(' ');
+      if (joined.includes('rev-parse')) return opts.local;
+      if (joined.includes('ls-remote')) {
+        if (opts.remoteRaw !== undefined) return opts.remoteRaw;
+        return opts.remote + '\trefs/heads/main';
+      }
+      if (joined.includes('remote get-url')) return 'https://x-access-token:TOK@github.com/o/r.git';
+      if (args[0] === 'clone') {
+        const dest = args[args.length - 1];
+        for (const f of VERIFY_FILES) {
+          fs.mkdirSync(path.join(dest, path.dirname(f)), { recursive: true });
+          fs.writeFileSync(path.join(dest, f), '// stub\n');
+        }
+        if (opts.cloneFails) throw Object.assign(new Error('clone failed'), { stderr: 'fatal: could not read' });
+        return '';
+      }
+      if (joined.includes('--check')) {
+        if (opts.syntaxFails) throw Object.assign(new Error('bad syntax'), { stderr: 'SyntaxError: unexpected token' });
+        return '';
+      }
+      if (joined.includes('webtest.js')) {
+        if (opts.testsFail) throw Object.assign(new Error('tests failed'), { stderr: '3 passed, 2 failed' });
+        return '59 passed, 0 failed';
+      }
+      if (opts.throwAll) throw new Error('git exploded');
+      return '';
+    }
+  };
+}
+
+const SHA_A = 'a'.repeat(40);
+const SHA_B = 'b'.repeat(40);
+const SHA_C = 'c'.repeat(40);
+
+async function testWatcher() {
+  // The whole userinfo goes, not just the password - the username half of a
+  // GitHub token URL is not worth keeping and redacting less is a worse default.
+  eq(redactUrl('https://x-access-token:SECRET@github.com/o/r.git'),
+    'https://***@github.com/o/r.git',
+    'watcher: credentials are redacted before logging');
+  ok(!redactUrl('https://x-access-token:SECRET@github.com/o/r.git').includes('SECRET'),
+    'watcher: the token itself never survives redaction');
+
+  // Nothing to do.
+  let deployed = 0;
+  let h = makeExec({ local: SHA_A, remote: SHA_A });
+  let w = createWatcher({ exec: h.exec, onDeploy: () => { deployed++; } });
+  await w.tick();
+  eq(deployed, 0, 'watcher: an unchanged remote does not restart');
+  eq(w.status().last, 'up to date', 'watcher: status says up to date');
+  ok(!h.calls.some((c) => c.startsWith('git clone')), 'watcher: no clone when nothing changed');
+
+  // A good update deploys.
+  deployed = 0;
+  h = makeExec({ local: SHA_A, remote: SHA_B });
+  w = createWatcher({ exec: h.exec, onDeploy: () => { deployed++; } });
+  await w.tick();
+  eq(deployed, 1, 'watcher: a verified update triggers exactly one restart');
+  ok(h.calls.some((c) => c.includes('webtest.js')), 'watcher: the suite really is run before deploying');
+
+  // A commit that fails the tests must NOT deploy.
+  deployed = 0;
+  h = makeExec({ local: SHA_A, remote: SHA_B, testsFail: true });
+  w = createWatcher({ exec: h.exec, onDeploy: () => { deployed++; } });
+  await w.tick();
+  eq(deployed, 0, 'watcher: a commit that fails the suite is NOT deployed');
+  ok(/rejected/.test(w.status().last), 'watcher: status reports the rejection', w.status().last);
+
+  // A commit with a syntax error must NOT deploy.
+  deployed = 0;
+  h = makeExec({ local: SHA_A, remote: SHA_B, syntaxFails: true });
+  w = createWatcher({ exec: h.exec, onDeploy: () => { deployed++; } });
+  await w.tick();
+  eq(deployed, 0, 'watcher: a commit that fails the syntax check is NOT deployed');
+
+  // A rejected revision is judged once, not re-tested every minute.
+  deployed = 0;
+  h = makeExec({ local: SHA_A, remote: SHA_B, testsFail: true });
+  w = createWatcher({ exec: h.exec, onDeploy: () => { deployed++; } });
+  await w.tick();
+  const clonesAfterFirst = h.calls.filter((c) => c.startsWith('git clone')).length;
+  await w.tick();
+  await w.tick();
+  const clonesAfterThird = h.calls.filter((c) => c.startsWith('git clone')).length;
+  eq(clonesAfterFirst, 1, 'watcher: the bad revision was verified once');
+  eq(clonesAfterThird, 1, 'watcher: it is not re-verified on every tick');
+  eq(deployed, 0, 'watcher: still not deployed');
+
+  // But a NEWER commit after a bad one does get a fresh chance.
+  deployed = 0;
+  let stage = { local: SHA_A, remote: SHA_B, testsFail: true };
+  const dynamic = {
+    calls: [],
+    exec: async (cmd, args) => {
+      const inner = makeExec(stage);
+      const out = await inner.exec(cmd, args);
+      dynamic.calls.push(...inner.calls);
+      return out;
+    }
+  };
+  w = createWatcher({ exec: dynamic.exec, onDeploy: () => { deployed++; } });
+  await w.tick();
+  eq(deployed, 0, 'watcher: the broken commit is held back');
+  stage = { local: SHA_A, remote: SHA_C, testsFail: false };
+  await w.tick();
+  eq(deployed, 1, 'watcher: a later fixed commit deploys');
+
+  // Garbage from ls-remote must not deploy anything.
+  deployed = 0;
+  h = makeExec({ local: SHA_A, remoteRaw: 'not-a-sha whatever' });
+  w = createWatcher({ exec: h.exec, onDeploy: () => { deployed++; } });
+  await w.tick();
+  eq(deployed, 0, 'watcher: an unparseable ls-remote does not restart');
+
+  // A failing git command must not crash or deploy.
+  deployed = 0;
+  w = createWatcher({
+    exec: async () => { throw new Error('network down'); },
+    onDeploy: () => { deployed++; }
+  });
+  await w.tick();
+  eq(deployed, 0, 'watcher: a git failure does not restart');
+  eq(w.status().last, 'error', 'watcher: the failure is visible in status');
+
+  // A failed clone is a rejection, not a deploy.
+  deployed = 0;
+  h = makeExec({ local: SHA_A, remote: SHA_B, cloneFails: true });
+  w = createWatcher({ exec: h.exec, onDeploy: () => { deployed++; } });
+  await w.tick();
+  eq(deployed, 0, 'watcher: a failed clone does not restart');
+}
+
 /* ------------------------------------------------------------------- main */
 
 (async () => {
@@ -263,7 +413,8 @@ async function testServer() {
     ['upstream allowlist', testUpstreams],
     ['static paths', testStaticPaths],
     ['proxy', testProxy],
-    ['server', testServer]
+    ['server', testServer],
+    ['auto-update', testWatcher]
   ];
   for (const [name, fn] of blocks) {
     const before = fail;

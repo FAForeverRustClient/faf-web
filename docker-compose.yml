@@ -5,10 +5,20 @@
 #
 # This service has NO secrets, NO database and NO volume. It serves static files
 # and proxies read-only public APIs, so there is nothing to persist and nothing
-# to leak. If it is destroyed and recreated, it comes back identical.
+# to leak. If it is destroyed and recreated, it comes back identical. That is
+# also what makes auto-update safe here: a redeploy cannot lose data, because
+# there is no data.
 #
-# It also has no /etc/machine-id bind mount and no fingerprint concerns. That is
-# uid-relay's problem, and uid-relay is a separate stack that is not deployed.
+# AUTO-UPDATE: with AUTO_UPDATE=1 the app polls the git remote and, when the
+# branch moves, clones the new revision to a temp dir, syntax-checks it and runs
+# the test suite. Only if that passes does it exit - and `restart: unless-stopped`
+# makes Docker restart it on ANY exit, including exit 0, so the command re-runs
+# and re-clones. That restart policy is load-bearing: change it to `on-failure`
+# and auto-update silently stops working.
+#
+# A commit that fails verification is logged loudly and NOT deployed; the old
+# version keeps serving. That matters because the whole point of this feature is
+# to let someone with only GitHub access update the site.
 
 name: faf-web
 
@@ -17,6 +27,8 @@ services:
     image: node:24-bookworm
     container_name: faf-web
     hostname: faf-web
+
+    # Load-bearing for auto-update. See above.
     restart: unless-stopped
 
     ports:
@@ -26,4 +38,11 @@ services:
     environment:
       PORT: "8098"
 
-    command: ["sh", "-c", "set -e; rm -rf /app; mkdir -p /app; git clone --depth 1 https://github.com/FAForeverRustClient/faf-web.git /app; cd /app; exec node server.js"]
+      # Auto-update. Set to "0" or remove to go back to manual restarts.
+      AUTO_UPDATE: "1"
+      # Must match the branch the clone command below checks out.
+      UPDATE_BRANCH: "main"
+      # Minimum 30000. One cheap `git ls-remote` per interval.
+      UPDATE_INTERVAL_MS: "60000"
+
+    command: ["sh", "-c", "set -e; rm -rf /app; mkdir -p /app; git clone --depth 1 --branch main https://github.com/FAForeverRustClient/faf-web.git /app; cd /app; exec node server.js"]

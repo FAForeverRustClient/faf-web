@@ -143,8 +143,55 @@ Port **8098**. uid-relay is 8097 and the tourney site is 8090.
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `8098` | HTTP port. |
+| `AUTO_UPDATE` | off | `1` enables the git watcher below. |
+| `UPDATE_BRANCH` | `main` | Branch to follow. Must match the clone in the compose command. |
+| `UPDATE_INTERVAL_MS` | `60000` | Poll interval, floored at 30000. |
 
-That is the entire configuration surface.
+No secrets, no volume, no database.
+
+---
+
+## Auto-update
+
+With `AUTO_UPDATE=1` the site redeploys itself when the branch moves, so someone
+with **only GitHub access** can update it without touching Dockhand.
+
+**How the restart works**, because it looks like a trick: the container's command
+clones the repo and then runs the server, and `restart: unless-stopped` makes
+Docker restart the container on **any** exit, including exit 0. So deploying is
+just exiting. No docker socket, no privileged access, no inbound endpoint.
+
+That restart policy is load-bearing. Change it to `on-failure` and auto-update
+stops working silently.
+
+**Why polling, not a webhook.** A webhook is instant but needs a public endpoint,
+a shared secret, an NPM route and signature verification. One `git ls-remote` a
+minute needs none of that and works identically for a private repo, because it
+reuses the credentials already in the clone URL. A minute of delay is not worth
+four moving parts.
+
+**A bad commit cannot take the site down.** This is the point of the feature, not
+a nicety: handing someone GitHub access is exactly the situation where a broken
+commit reaches production unattended. So a detected change is never deployed
+blindly. The new revision is cloned to a temp directory, every source file is
+syntax-checked, and the full test suite is run. Only then does the process exit.
+A failure is logged as `UPDATE REJECTED` and the old version keeps serving.
+
+A rejected revision is judged **once**, not re-tested every minute. Pushing a
+newer commit gives it a fresh attempt.
+
+`GET /healthz` reports the watcher's state: current sha, branch, interval and
+what happened last.
+
+### What this means for whoever is given access
+
+They edit files on GitHub, and within a minute the site either updates or logs a
+rejection. They cannot deploy something that fails the tests, and they cannot
+lose data because there is none. What they **can** do is change what the site
+shows, so it is still write access to a public site - give it to people you would
+give the Dockhand password to.
+
+To turn it off, set `AUTO_UPDATE: "0"` and restart.
 
 ### Headers it sets
 
@@ -160,12 +207,13 @@ on the next load rather than whenever their browser feels like it.
 
 ```bash
 npm run check   # node --check every source file
-npm test        # 59 checks, no network required
+npm test        # 78 checks, no network required
 ```
 
-`webtest.js` unit-tests the two pieces that carry real risk - the upstream
-allowlist and the static path resolver - then boots the real server over real
-HTTP for routing, the SPA fallback, method handling and security headers. The
+`webtest.js` unit-tests the pieces that carry real risk - the upstream
+allowlist, the static path resolver and the auto-update watcher - then boots the
+real server over real HTTP for routing, the SPA fallback, method handling and
+security headers. The
 proxy's upstream fetch is injectable, so timeouts, oversized bodies, 500s and
 header hygiene are all driven with stubs rather than by hoping FAF answers.
 

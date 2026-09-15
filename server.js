@@ -27,11 +27,20 @@ const path = require('path');
 const { resolve: resolveUpstream } = require('./lib/upstreams');
 const { createCache, proxyGet } = require('./lib/proxy');
 const { resolveFile, cacheHeader } = require('./lib/static');
+const { createWatcher } = require('./lib/watcher');
 
 const PORT = Number(process.env.PORT || 8098);
+// Auto-update. Off unless AUTO_UPDATE=1, so nothing changes for anyone who
+// does not ask for it. See lib/watcher.js for why this is a poll and not a
+// webhook, and why a bad commit cannot take the site down.
+const AUTO_UPDATE = process.env.AUTO_UPDATE === '1';
+const UPDATE_BRANCH = process.env.UPDATE_BRANCH || 'main';
+const UPDATE_INTERVAL_MS = Math.max(30_000, Number(process.env.UPDATE_INTERVAL_MS || 60_000));
+const APP_DIR = process.env.APP_DIR || __dirname;
 const PUBLIC_DIR = path.resolve(__dirname, 'public');
 const started = Date.now();
 const cache = createCache();
+let watcher = null;
 
 /* ------------------------------------------------------------------ logging */
 
@@ -158,7 +167,8 @@ const server = http.createServer((req, res) => {
       service: 'faf-web',
       uptimeSeconds: Math.floor((Date.now() - started) / 1000),
       cacheEntries: cache.size(),
-      playTab: false
+      playTab: false,
+      autoUpdate: watcher ? watcher.status() : { enabled: false }
     });
     return;
   }
@@ -188,8 +198,25 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 
 if (require.main === module) {
   server.listen(PORT, () => {
-    log('info', 'listening', { port: PORT, publicDir: PUBLIC_DIR, playTab: false });
+    log('info', 'listening', { port: PORT, publicDir: PUBLIC_DIR, playTab: false, autoUpdate: AUTO_UPDATE });
   });
+
+  if (AUTO_UPDATE) {
+    watcher = createWatcher({
+      appDir: APP_DIR,
+      branch: UPDATE_BRANCH,
+      intervalMs: UPDATE_INTERVAL_MS,
+      log,
+      onDeploy: () => {
+        // Exiting IS the deploy: Docker's restart policy brings the container
+        // back and the command re-clones. Close the listener first so in-flight
+        // requests finish.
+        server.close(() => process.exit(0));
+        setTimeout(() => process.exit(0), 5_000).unref();
+      }
+    });
+    watcher.start();
+  }
 }
 
 module.exports = { server };
