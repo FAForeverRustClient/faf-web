@@ -1,0 +1,15 @@
+{
+  "name": "faf-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FAF mobile web client. Serves the app and proxies the read-only FAF APIs. No Play tab yet.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node webtest.js",
+    "check": "for f in server.js lib/*.js public/*.js webtest.js; do node --check $f || exit 1; done"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {},
+  "license": "MIT"
+}

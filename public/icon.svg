@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="FAF Web">
+  <rect width="64" height="64" rx="14" fill="#171b21"/>
+  <path d="M18 44V20h22v6H25v5h13v6H25v7z" fill="#5aa9e6"/>
+  <circle cx="45" cy="42" r="4" fill="#e0a33e"/>
+</svg>

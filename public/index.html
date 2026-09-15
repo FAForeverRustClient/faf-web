@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="description" content="A mobile web companion for Forged Alliance Forever.">
+<title>FAF Web</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+</head>
+<body>
+
+<header class="topbar">
+  <button class="menu-btn" id="menuBtn" aria-label="Menu" aria-expanded="false">☰</button>
+  <h1 class="brand">FAF<span>Web</span></h1>
+  <span class="build-tag" title="The Play tab is not part of this build">no play tab</span>
+</header>
+
+<nav class="sidenav" id="sidenav" aria-label="Sections">
+  <a href="/news" data-route="news">News</a>
+  <a href="/tournaments" data-route="tournaments">Tournaments</a>
+  <a href="/events" data-route="events">Events</a>
+  <a href="/leaderboard" data-route="leaderboard">Leaderboard</a>
+  <a href="/maps" data-route="maps">Maps</a>
+  <a href="/mods" data-route="mods">Mods</a>
+  <a href="/units" data-route="units">Unit DB</a>
+  <a href="/training" data-route="training">Training</a>
+  <a href="/changelog" data-route="changelog">Changelog</a>
+  <a href="/chat" data-route="chat">Chat</a>
+</nav>
+
+<div class="scrim" id="scrim" hidden></div>
+
+<main id="view" class="view" tabindex="-1">
+  <!-- rendered by app.js -->
+</main>
+
+<nav class="tabbar" aria-label="Sections">
+  <a href="/news" data-route="news"><span>News</span></a>
+  <a href="/tournaments" data-route="tournaments"><span>Cups</span></a>
+  <a href="/leaderboard" data-route="leaderboard"><span>Ranks</span></a>
+  <a href="/maps" data-route="maps"><span>Maps</span></a>
+  <a href="/events" data-route="events"><span>Events</span></a>
+</nav>
+
+<script src="/app.js"></script>
+</body>
+</html>

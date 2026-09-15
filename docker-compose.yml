@@ -1,0 +1,29 @@
+# faf-web - Dockhand stack
+#
+# Same pattern as the tournament site and uid-relay: no image build, the
+# container clones the repo at start and runs it.
+#
+# This service has NO secrets, NO database and NO volume. It serves static files
+# and proxies read-only public APIs, so there is nothing to persist and nothing
+# to leak. If it is destroyed and recreated, it comes back identical.
+#
+# It also has no /etc/machine-id bind mount and no fingerprint concerns. That is
+# uid-relay's problem, and uid-relay is a separate stack that is not deployed.
+
+name: faf-web
+
+services:
+  faf-web:
+    image: node:24-bookworm
+    container_name: faf-web
+    hostname: faf-web
+    restart: unless-stopped
+
+    ports:
+      # host:container. Nginx Proxy Manager forwards to the host side.
+      - "8098:8098"
+
+    environment:
+      PORT: "8098"
+
+    command: ["sh", "-c", "set -e; rm -rf /app; mkdir -p /app; git clone --depth 1 https://github.com/FAForeverRustClient/faf-web.git /app; cd /app; exec node server.js"]
